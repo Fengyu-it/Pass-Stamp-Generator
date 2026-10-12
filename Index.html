@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>個人圖章產生器｜豐PASS 簽核系統</title>
+<!--
+  ===================================================================
+  豐譽｜豐PASS 個人圖章產生器（單一 HTML，離線可用、不需安裝）
+  用途：同仁自行產生簽核用的個人圖章或手寫簽名，存成 PNG 後到
+        豐PASS「修改個人資料」上傳。
+
+  實作重點
+  - 全部用 canvas 畫，沒有任何外部相依；直接用瀏覽器開這個檔就能跑。
+  - 文字排版用「等分格」：把內框平均切成 N 格、每個字置中於自己那一格。
+    不要用字的墨跡寬度去排，「大」「一」這種筆畫窄的字會把後面的間距撐開。
+  - 輸出 4 倍解析度再縮，邊緣才不會鋸齒；下載的是 880x400 PNG。
+  - 字體走系統字，Windows 吃得到標楷體，手機沒有就退明體/襯線體。
+    （嵌中文網頁字型動輒 10MB 以上，為了離線可用與載入速度不划算。）
+  ===================================================================
+-->
+<style>
+:root{
+  --brand:#007A87; --brand-dark:#00555E; --brand-deep:#003B42;
+  --brand-light:#B5E1E5; --brand-lightest:#E9F4F5;
+  --clay:#BE8B55; --clay-dark:#765530; --clay-lightest:#F8F1E8;
+  --red:#E5484D;
+  --ink:#16272E; --ink2:#46595F; --ink3:#7A8A90;
+  --line:#E2E9EA; --paper:#FFFFFF; --ground:#F3F6F7;
+  --font-sans:"Noto Sans TC","Microsoft JhengHei","微軟正黑體",system-ui,sans-serif;
+  --r-sm:8px; --r-md:12px; --r-lg:16px; --r-pill:100px;
+  --sh-card:0 2px 10px rgba(22,39,46,.08);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans);color:var(--ink);background:var(--ground);
+  -webkit-font-smoothing:antialiased;padding:20px 12px 48px}
+svg{fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+.wrap{max-width:860px;margin:0 auto}
+
+header.top{background:linear-gradient(150deg,#00555E 0%,#003B42 60%,#04262B 100%);color:#fff;
+  border-radius:14px 14px 0 0;padding:24px 28px;position:relative;overflow:hidden}
+header.top::before{content:"";position:absolute;right:-80px;top:-110px;width:280px;height:280px;
+  border-radius:50%;background:radial-gradient(circle at 35% 35%,rgba(0,122,135,.55),rgba(0,122,135,0) 65%)}
+header.top .brand{display:flex;align-items:center;gap:9px;margin-bottom:9px;position:relative}
+header.top .brand span{font-size:12.5px;font-weight:700;color:var(--brand-light);letter-spacing:.06em}
+header.top h1{font-size:27px;font-weight:800;position:relative;line-height:1.3}
+header.top p{margin-top:7px;font-size:14.5px;color:var(--brand-light);position:relative;line-height:1.7}
+
+.card{background:var(--paper);border:1px solid var(--line);border-top:none;
+  border-radius:0 0 14px 14px;box-shadow:var(--sh-card);overflow:hidden}
+
+.tabs{display:flex;border-bottom:1px solid var(--line);background:#FAFBFB}
+.tabs button{flex:1;border:none;background:none;cursor:pointer;font-family:inherit;
+  font-size:15.5px;font-weight:700;color:var(--ink3);padding:15px 10px;border-bottom:3px solid transparent}
+.tabs button[aria-selected="true"]{color:var(--brand-dark);border-bottom-color:var(--brand);background:var(--paper)}
+
+.pane{padding:22px 26px 26px}
+.pane[hidden]{display:none}
+
+.field{margin-bottom:18px}
+.field label{display:block;font-size:13.5px;font-weight:800;color:var(--ink);margin-bottom:8px}
+.field .hint{font-weight:600;color:var(--ink3);font-size:12.5px;margin-left:6px}
+input[type=text]{width:100%;font-family:inherit;font-size:19px;padding:12px 14px;
+  border:1.5px solid var(--line);border-radius:var(--r-md);color:var(--ink);background:var(--paper)}
+input[type=text]:focus{outline:none;border-color:var(--brand)}
+
+.opts{display:flex;flex-wrap:wrap;gap:9px}
+.opt{border:1.5px solid var(--line);background:var(--paper);border-radius:var(--r-md);
+  padding:7px 9px;cursor:pointer;line-height:0}
+.opt canvas{width:112px;height:51px;display:block}
+.opt[aria-pressed="true"]{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-lightest)}
+
+.colors{display:flex;gap:9px}
+.swatch{width:40px;height:40px;border-radius:50%;border:2.5px solid var(--line);cursor:pointer;padding:0}
+.swatch[aria-pressed="true"]{border-color:var(--ink);box-shadow:0 0 0 3px var(--ground)}
+
+.preview{margin-top:4px;border:1.5px dashed var(--brand-light);border-radius:var(--r-lg);
+  background:var(--brand-lightest);padding:18px;display:flex;align-items:center;justify-content:center;min-height:150px}
+.preview canvas{max-width:100%;height:auto;background:
+  linear-gradient(45deg,#e9eced 25%,transparent 25%,transparent 75%,#e9eced 75%),
+  linear-gradient(45deg,#e9eced 25%,transparent 25%,transparent 75%,#e9eced 75%);
+  background-size:16px 16px;background-position:0 0,8px 8px;border-radius:4px}
+
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:18px}
+.btn{font-family:inherit;font-size:15.5px;font-weight:800;border:none;border-radius:var(--r-md);
+  padding:13px 24px;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
+.btn-primary{background:var(--brand);color:#fff}
+.btn-primary:hover{background:var(--brand-dark)}
+.btn-primary:disabled{background:#B9C7CA;cursor:not-allowed}
+.btn-ghost{background:var(--ground);color:var(--ink2)}
+.btn svg{width:16px;height:16px;stroke:currentColor}
+
+.sig-wrap{border:1.5px solid var(--line);border-radius:var(--r-lg);overflow:hidden;background:#fff}
+.sig-wrap canvas{display:block;width:100%;height:auto;touch-action:none;cursor:crosshair}
+
+.note{display:flex;gap:11px;align-items:flex-start;background:var(--clay-lightest);
+  border-radius:var(--r-md);padding:13px 16px;margin-top:18px}
+.note svg{width:18px;height:18px;stroke:var(--clay-dark);flex:0 0 auto;margin-top:2px}
+.note div{font-size:13.5px;color:var(--clay-dark);line-height:1.7;font-weight:600}
+
+.steps{margin-top:22px;background:var(--ground);border-radius:var(--r-lg);padding:18px 22px}
+.steps h3{font-size:15.5px;font-weight:800;color:var(--ink);margin-bottom:11px}
+.steps ol{list-style:none;counter-reset:s;display:flex;flex-direction:column;gap:8px}
+.steps li{counter-increment:s;font-size:14px;color:var(--ink2);line-height:1.7;padding-left:26px;position:relative}
+.steps li::before{content:counter(s);position:absolute;left:0;top:3px;width:19px;height:19px;border-radius:50%;
+  background:var(--brand);color:#fff;font-size:11.5px;font-weight:800;display:grid;place-items:center}
+.steps b{color:var(--brand-dark)}
+
+footer.foot{max-width:860px;margin:16px auto 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+footer.foot .dash{width:28px;height:3px;background:var(--clay);border-radius:2px}
+footer.foot span{font-size:12.5px;color:var(--ink3)}
+
+@media (max-width:560px){
+  .pane{padding:18px 16px 22px}
+  header.top{padding:20px 18px}
+  header.top h1{font-size:22px}
+  .opt canvas{width:96px;height:44px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" style="width:17px;height:17px;stroke:var(--brand-light)"><rect x="3" y="7" width="18" height="12" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      <span>豐譽企業團隊 ｜ 豐PASS 簽核系統</span>
+    </div>
+    <h1>個人圖章產生器</h1>
+    <p>打上名字就能做一顆簽核用的圖章，或是直接手寫一個簽名。做好按下載，再到豐PASS 的「修改個人資料」上傳就行了。</p>
+  </header>
+
+  <div class="card">
+
+    <div class="tabs" role="tablist">
+      <button role="tab" id="tab-seal" aria-selected="true" aria-controls="pane-seal">打字做圖章</button>
+      <button role="tab" id="tab-sign" aria-selected="false" aria-controls="pane-sign">手寫簽名</button>
+    </div>
+
+    <!-- ══ 打字做圖章 ══ -->
+    <section class="pane" id="pane-seal" role="tabpanel" aria-labelledby="tab-seal">
+      <div class="field">
+        <label for="name">你的名字<span class="hint">兩到六個字都可以</span></label>
+        <input type="text" id="name" maxlength="6" placeholder="例：王大明" autocomplete="off">
+      </div>
+
+      <div class="field">
+        <label>樣式</label>
+        <div class="opts" id="styles"></div>
+      </div>
+
+      <div class="field">
+        <label>顏色</label>
+        <div class="colors" id="colors"></div>
+      </div>
+
+      <div class="preview"><canvas id="pv" width="880" height="400"></canvas></div>
+
+      <div class="row">
+        <button class="btn btn-primary" id="dl" disabled>
+          <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          下載圖章 PNG
+        </button>
+        <label style="display:inline-flex;align-items:center;gap:7px;font-size:14px;color:var(--ink2);font-weight:600;cursor:pointer">
+          <input type="checkbox" id="whitebg" style="width:17px;height:17px"> 要白色底（預設是透明底）
+        </label>
+      </div>
+
+      <div class="note">
+        <svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <div>字體用的是電腦裡本來就有的字 —— 公司電腦大多是標楷體，手機可能會變成別的字型，長相會有一點差異。<b>以預覽看到的為準。</b></div>
+      </div>
+    </section>
+
+    <!-- ══ 手寫簽名 ══ -->
+    <section class="pane" id="pane-sign" role="tabpanel" aria-labelledby="tab-sign" hidden>
+      <div class="field">
+        <label>在下面的框裡簽名<span class="hint">手機用手指、電腦用滑鼠</span></label>
+        <div class="sig-wrap"><canvas id="sig" width="880" height="400"></canvas></div>
+      </div>
+
+      <div class="field">
+        <label>筆跡顏色</label>
+        <div class="colors" id="sigcolors"></div>
+      </div>
+
+      <div class="row">
+        <button class="btn btn-primary" id="sdl" disabled>
+          <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          下載簽名 PNG
+        </button>
+        <button class="btn btn-ghost" id="sclear">清掉重簽</button>
+      </div>
+
+      <div class="note">
+        <svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <div>下載的是<b>透明底</b>的 PNG，四周多餘的空白會自動裁掉。用手機簽會比用滑鼠好簽很多。</div>
+      </div>
+    </section>
+
+    <div class="pane" style="padding-top:0">
+      <div class="steps">
+        <h3>做好之後怎麼放上去</h3>
+        <ol>
+          <li>打開豐PASS（<b>pass.fengyu.com.tw</b> 或手機的 NT OneAPP）。</li>
+          <li>點<b>右上角的 ≡</b> → 點自己的名字 → <b>個人資料</b>。</li>
+          <li>一路<b>滑到最底下</b>，在「變更個人圖章」按<b>選擇檔案</b>，挑剛才下載的 PNG。</li>
+          <li><b>滑回最上面按「儲存」</b> —— 這一步最容易漏掉，沒按就不算數。</li>
+        </ol>
+      </div>
+    </div>
+
+  </div>
+
+  <footer class="foot">
+    <span class="dash"></span>
+    <span>有問題請洽協助窗口 分機 1265　｜　豐譽企業團隊・數位創新處 製</span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var W = 880, H = 400, K = 2;            // K＝超取樣倍率，畫完再縮，邊緣才乾淨
+  var FONT = '"標楷體","DFKai-SB","BiauKai","Noto Serif TC","Songti TC",serif';
+  var COLORS = [
+    { id: 'red',   v: '#D0021B', name: '紅' },
+    { id: 'black', v: '#1A1A1A', name: '黑' },
+    { id: 'blue',  v: '#1B3FAE', name: '藍' }
+  ];
+  var STYLES = ['粗框', '細框', '圓角', '無框', '反白'];
+
+  var state = { name: '', style: '粗框', color: '#D0021B', white: false };
+
+  // ── 畫圖章 ─────────────────────────────────────────────
+  // 排版用「等分格」：內框平均切成 N 格、每字置中於自己那格。
+  // 不能用字的墨跡寬度去排——「大」「一」這類筆畫窄的字會把後面的間距撐開。
+  function drawName(ctx, text, x0, y0, w, h, color) {
+    var n = text.length;
+    if (!n) return;
+    var cell = w / n;
+    // 1.08：中文字的墨跡本來就比字身小一圈，允許字級略大於格寬，
+    // 字數多時才不會縮得太小（圖章在簽核歷程上只顯示約 100px 寬，字小就看不清）
+    var size = Math.min(h, cell * 1.08);
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = size + 'px ' + FONT;
+    for (var i = 0; i < n; i++) {
+      ctx.fillText(text[i], x0 + cell * (i + 0.5), y0 + h / 2);
+    }
+  }
+
+  function render(ctx, text, style, color, white, w, h) {
+    ctx.clearRect(0, 0, w, h);
+    if (white) { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); }
+    if (!text) return;
+
+    var bw, pad;
+    if (style === '粗框') {
+      bw = h * 0.075; pad = bw * 2.4;
+      ctx.strokeStyle = color; ctx.lineWidth = bw;
+      ctx.strokeRect(bw / 2, bw / 2, w - bw, h - bw);
+      drawName(ctx, text, pad, pad, w - pad * 2, h - pad * 2, color);
+
+    } else if (style === '細框') {
+      bw = h * 0.03; pad = bw * 5;
+      ctx.strokeStyle = color; ctx.lineWidth = bw;
+      ctx.strokeRect(bw / 2, bw / 2, w - bw, h - bw);
+      drawName(ctx, text, pad, pad, w - pad * 2, h - pad * 2, color);
+
+    } else if (style === '圓角') {
+      bw = h * 0.035; pad = bw * 6;
+      var r = h * 0.17;
+      ctx.strokeStyle = color; ctx.lineWidth = bw;
+      ctx.beginPath();
+      if (ctx.roundRect) { ctx.roundRect(bw / 2, bw / 2, w - bw, h - bw, r); }
+      else {                                   // 舊瀏覽器沒有 roundRect，自己畫
+        var x = bw / 2, y = bw / 2, ww = w - bw, hh = h - bw;
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + ww, y, x + ww, y + hh, r);
+        ctx.arcTo(x + ww, y + hh, x, y + hh, r);
+        ctx.arcTo(x, y + hh, x, y, r);
+        ctx.arcTo(x, y, x + ww, y, r);
+        ctx.closePath();
+      }
+      ctx.stroke();
+      drawName(ctx, text, pad, pad, w - pad * 2, h - pad * 2, color);
+
+    } else if (style === '無框') {
+      pad = h * 0.09;
+      drawName(ctx, text, pad, pad, w - pad * 2, h - pad * 2, color);
+
+    } else {                                   // 反白：紅底白字
+      ctx.fillStyle = color; ctx.fillRect(0, 0, w, h);
+      pad = h * 0.12;
+      drawName(ctx, text, pad, pad, w - pad * 2, h - pad * 2, '#fff');
+    }
+  }
+
+  // ── 預覽 ───────────────────────────────────────────────
+  var pv = document.getElementById('pv');
+  var pvx = pv.getContext('2d');
+
+  function paint() {
+    render(pvx, state.name, state.style, state.color, state.white, W, H);
+    document.getElementById('dl').disabled = !state.name;
+    paintThumbs();
+  }
+
+  // ── 樣式縮圖（即時反映目前的名字與顏色）──────────────
+  var stylesBox = document.getElementById('styles');
+  STYLES.forEach(function (st) {
+    var b = document.createElement('button');
+    b.className = 'opt';
+    b.type = 'button';
+    b.title = st;
+    b.setAttribute('aria-pressed', st === state.style);
+    b.dataset.style = st;
+    var c = document.createElement('canvas');
+    c.width = 224; c.height = 102;
+    b.appendChild(c);
+    b.addEventListener('click', function () {
+      state.style = st;
+      [].forEach.call(stylesBox.children, function (el) {
+        el.setAttribute('aria-pressed', el.dataset.style === st);
+      });
+      paint();
+    });
+    stylesBox.appendChild(b);
+  });
+
+  function paintThumbs() {
+    [].forEach.call(stylesBox.children, function (el) {
+      var c = el.querySelector('canvas');
+      render(c.getContext('2d'), state.name || '範例', el.dataset.style,
+             state.color, false, c.width, c.height);
+    });
+  }
+
+  // ── 顏色 ───────────────────────────────────────────────
+  function buildColors(box, onPick, initial) {
+    COLORS.forEach(function (c) {
+      var b = document.createElement('button');
+      b.className = 'swatch';
+      b.type = 'button';
+      b.style.background = c.v;
+      b.title = c.name;
+      b.setAttribute('aria-label', c.name);
+      b.setAttribute('aria-pressed', c.v === initial);
+      b.addEventListener('click', function () {
+        [].forEach.call(box.children, function (el) {
+          el.setAttribute('aria-pressed', el === b);
+        });
+        onPick(c.v);
+      });
+      box.appendChild(b);
+    });
+  }
+  buildColors(document.getElementById('colors'), function (v) { state.color = v; paint(); }, state.color);
+
+  document.getElementById('name').addEventListener('input', function (e) {
+    state.name = e.target.value.trim();
+    paint();
+  });
+  document.getElementById('whitebg').addEventListener('change', function (e) {
+    state.white = e.target.checked;
+    paint();
+  });
+
+  // ── 下載 ───────────────────────────────────────────────
+  function save(canvas, filename) {
+    canvas.toBlob(function (blob) {
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    }, 'image/png');
+  }
+
+  document.getElementById('dl').addEventListener('click', function () {
+    var c = document.createElement('canvas');
+    c.width = W * K; c.height = H * K;
+    var x = c.getContext('2d');
+    x.scale(K, K);
+    render(x, state.name, state.style, state.color, state.white, W, H);
+    save(c, '個人圖章_' + state.name + '.png');
+  });
+
+  // ── 手寫簽名 ───────────────────────────────────────────
+  var sig = document.getElementById('sig');
+  var sx = sig.getContext('2d');
+  var drawing = false, dirty = false, sigColor = '#1B3FAE';
+
+  sx.lineCap = 'round';
+  sx.lineJoin = 'round';
+
+  function pos(e) {
+    var r = sig.getBoundingClientRect();
+    var p = e.touches ? e.touches[0] : e;
+    // 畫布的 CSS 寬度跟實際像素寬度不同，座標要換算回畫布座標
+    return { x: (p.clientX - r.left) * (sig.width / r.width),
+             y: (p.clientY - r.top) * (sig.height / r.height) };
+  }
+  function start(e) {
+    e.preventDefault();
+    drawing = true;
+    var p = pos(e);
+    sx.strokeStyle = sigColor;
+    sx.lineWidth = 7;
+    sx.beginPath();
+    sx.moveTo(p.x, p.y);
+  }
+  function move(e) {
+    if (!drawing) return;
+    e.preventDefault();
+    var p = pos(e);
+    sx.lineTo(p.x, p.y);
+    sx.stroke();
+    dirty = true;
+    document.getElementById('sdl').disabled = false;
+  }
+  function end() { drawing = false; }
+
+  ['mousedown', 'touchstart'].forEach(function (t) { sig.addEventListener(t, start, { passive: false }); });
+  ['mousemove', 'touchmove'].forEach(function (t) { sig.addEventListener(t, move, { passive: false }); });
+  ['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(function (t) { sig.addEventListener(t, end); });
+
+  buildColors(document.getElementById('sigcolors'), function (v) { sigColor = v; }, sigColor);
+
+  document.getElementById('sclear').addEventListener('click', function () {
+    sx.clearRect(0, 0, sig.width, sig.height);
+    dirty = false;
+    document.getElementById('sdl').disabled = true;
+  });
+
+  // 下載前把四周空白裁掉——整張 880x400 傳上去，簽名會縮得很小
+  function trim(canvas) {
+    var c = canvas.getContext('2d');
+    var d = c.getImageData(0, 0, canvas.width, canvas.height).data;
+    var x0 = canvas.width, y0 = canvas.height, x1 = 0, y1 = 0, found = false;
+    for (var y = 0; y < canvas.height; y++) {
+      for (var x = 0; x < canvas.width; x++) {
+        if (d[(y * canvas.width + x) * 4 + 3] > 8) {
+          found = true;
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+      }
+    }
+    if (!found) return canvas;
+    var m = 12;
+    x0 = Math.max(0, x0 - m); y0 = Math.max(0, y0 - m);
+    x1 = Math.min(canvas.width - 1, x1 + m); y1 = Math.min(canvas.height - 1, y1 + m);
+    var out = document.createElement('canvas');
+    out.width = x1 - x0 + 1; out.height = y1 - y0 + 1;
+    out.getContext('2d').drawImage(canvas, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+    return out;
+  }
+
+  document.getElementById('sdl').addEventListener('click', function () {
+    if (!dirty) return;
+    save(trim(sig), '個人簽名.png');
+  });
+
+  // ── 分頁切換 ───────────────────────────────────────────
+  [['tab-seal', 'pane-seal'], ['tab-sign', 'pane-sign']].forEach(function (pair, i, all) {
+    document.getElementById(pair[0]).addEventListener('click', function () {
+      all.forEach(function (p, j) {
+        document.getElementById(p[0]).setAttribute('aria-selected', i === j);
+        document.getElementById(p[1]).hidden = i !== j;
+      });
+    });
+  });
+
+  paint();
+})();
+</script>
+</body>
+</html>
